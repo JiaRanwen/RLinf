@@ -14,14 +14,16 @@
 
 """Numerical checks of the SuperMimic objectives, reset sampler, update
 cadence, evaluation guards, training config limits, input norms, state
-representations, networks and simulator. None needs Ray. The two-rank check
-needs Gloo, the kinematics, representation and network checks need mjlab, and
-the MuJoCo Warp check needs mjlab and a CUDA device.
+representations, networks, the experimental BONES-SEED loader, and the
+simulator. None needs Ray. The two-rank check needs Gloo, the kinematics,
+representation and network checks need mjlab, and the MuJoCo Warp check
+needs mjlab and a CUDA device.
 """
 
 import importlib.util
 import math
 import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -424,6 +426,70 @@ def test_exported_config_records_the_motion_path(tmp_path, monkeypatch):
     )
     saved = OmegaConf.load(tmp_path / "config.yaml")
     assert saved.env.eval.motion_path == "/data/lafan1_g1"
+
+
+def _load_script(relative: str, module_name: str):
+    path = Path(__file__).resolve().parents[2] / relative
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_bones_seed_synthetic_csv_keeps_the_walk_and_drops_the_stair(tmp_path):
+    """A synthetic G1 CSV converts without an official file or mjlab.
+
+    The name filter drops the stair clip. The kept library stays on CPU.
+    """
+    from rlinf.envs.sim.g1_mimic.bones import load_bones_library, name_rejected
+    from rlinf.envs.sim.g1_mimic.constants import ACTION_DIM, G1_JOINT_NAMES
+
+    convert = _load_script(
+        "toolkits/supermimic/convert_bones_seed.py", "convert_bones_seed"
+    )
+    assert name_rejected("walk_on_stair")
+    assert not name_rejected("walk_forward")
+    header = [
+        "Frame",
+        *convert.ROOT_POS_COLUMNS,
+        *convert.ROOT_EULER_COLUMNS,
+        *[f"{name}_dof" for name in G1_JOINT_NAMES],
+    ]
+    row = ",".join(["0"] * len(header))
+    body = "\n".join([",".join(header), *([row] * 8)])
+    q0 = torch.zeros(ACTION_DIM)
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    for relative in (Path("2020-01-01/walk.csv"), Path("2020-01-01/climb_stair.csv")):
+        csv_path = tmp_path / "csv" / relative
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(body + "\n")
+        payload = convert.build_payload(csv_path, relative, q0, 120.0, 50.0)
+        assert payload["name"] == relative.with_suffix("").as_posix()
+        torch.save(payload, clips / convert.output_filename(relative))
+    library = load_bones_library(str(clips), None)
+    assert library.clip_names == ["2020-01-01/walk"]
+    assert library.frames.device.type == "cpu"
+    assert library.filter_counts["rejected_name"] == 1
+    assert library.filter_counts["kept"] == 1
+    nameless = dict(torch.load(clips / "clip_2020-01-01__walk.pt", weights_only=True))
+    del nameless["name"]
+    torch.save(nameless, clips / "clip_nameless.pt")
+    with pytest.raises(ValueError, match="no clip name"):
+        load_bones_library(str(clips), None)
+
+
+def test_bones_seed_motion_format_passes_config_checks():
+    cfg = _compose(
+        "supermimic_lafan1_gencoord",
+        [
+            "env.train.motion_path=/data/clips",
+            "env.train.motion_format=bones_seed",
+            "env.eval.motion_format=bones_seed",
+        ],
+    )
+    validate_supermimic_cfg(cfg)
 
 
 def test_lafan1_q0_export_needs_no_license_or_output(tmp_path, monkeypatch):

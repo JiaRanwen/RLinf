@@ -468,10 +468,20 @@ def load_motion_library(
 
 
 def build_motion_library(env_cfg: DictConfig, device: torch.device) -> MotionLibrary:
-    """Load the LAFAN1 motion library configured by ``env_cfg``."""
+    """Load the motion library configured by ``env_cfg``.
+
+    ``lafan1`` reads manifest-checked clips. ``bones_seed`` is the experimental
+    Appendix E loader: it filters by clip name, keeps the library on CPU, and
+    does not read ``manifest.json``.
+    """
     motion_format = str(env_cfg.get("motion_format", "lafan1"))
     num_clips = env_cfg.get("num_clips", None)
     num_clips = None if num_clips is None else int(num_clips)
+    if motion_format == "bones_seed":
+        # Lazy import: the filter module imports this file's payload decoder.
+        from rlinf.envs.sim.g1_mimic.bones import load_bones_library
+
+        return load_bones_library(str(env_cfg.get("motion_path", "")), num_clips)
     if motion_format == "lafan1":
         # motion_on_cpu keeps the frames in host memory; queries gather rows
         # there and copy only those rows to the simulator device.

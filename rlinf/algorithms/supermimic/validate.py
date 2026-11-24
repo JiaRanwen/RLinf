@@ -36,7 +36,7 @@ ENV_MODEL_KEYS = ("representation", "torch_compile")
 
 _CHOICES = {
     "representation": tuple(REPRESENTATIONS),
-    "motion_format": ("lafan1",),
+    "motion_format": ("lafan1", "bones_seed"),
 }
 
 
