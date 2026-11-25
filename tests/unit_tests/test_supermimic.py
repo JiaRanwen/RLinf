@@ -1642,6 +1642,21 @@ def test_body_kinematics_cache_is_reused(tmp_path):
         kin.forward = original
 
 
+@needs_mjlab
+def test_body_kinematics_digest_covers_every_frame():
+    """A frame the old 1024-stride sample skipped still changes the cache key."""
+    from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import asset_default_state
+
+    pose = asset_default_state()
+    frames = pose.repeat(1025, 1)
+    ends = torch.tensor([1025])
+    original = MotionLibrary.from_block(frames, ends)
+    changed = frames.clone()
+    changed[1, 0] += 1
+    edited = MotionLibrary.from_block(changed, ends)
+    assert original._kin_cache_identity() != edited._kin_cache_identity()
+
+
 @needs_warp
 @pytest.mark.parametrize("mode", ["add", "set"])
 def test_push_writes_only_the_horizontal_root_velocity(mode):

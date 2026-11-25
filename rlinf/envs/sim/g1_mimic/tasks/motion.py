@@ -69,12 +69,18 @@ def _log_motion(message: str) -> None:
 
 
 def _digest_array(digest: hashlib._Hash, array: object) -> None:
+    """Hash dtype, shape and bytes in chunks so a full library is not copied."""
     import numpy as np
 
     values = np.ascontiguousarray(array)
     digest.update(str(values.dtype).encode())
     digest.update(np.asarray(values.shape, dtype=np.int64).tobytes())
-    digest.update(values.tobytes())
+    if values.size == 0:
+        return
+    raw = memoryview(values).cast("B")
+    step = 8 * 1024 * 1024
+    for start in range(0, raw.nbytes, step):
+        digest.update(raw[start : start + step])
 
 
 @contextmanager
@@ -291,9 +297,7 @@ class MotionLibrary:
             _digest_array(digest, item.detach().cpu().contiguous().numpy())
         ends = self.ends.detach().cpu().contiguous()
         _digest_array(digest, ends.numpy())
-        frames = self.frames.detach().cpu()
-        sample = torch.cat((frames[::1024], frames[-1:]), dim=0)
-        _digest_array(digest, sample.contiguous().numpy())
+        _digest_array(digest, self.frames.detach().cpu().numpy())
         return digest.hexdigest()
 
     def _compute_kinematics(self) -> tuple[torch.Tensor, ...]:
