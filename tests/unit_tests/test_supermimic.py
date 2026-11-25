@@ -528,6 +528,61 @@ def test_bones_seed_synthetic_csv_keeps_the_walk_and_drops_the_stair(tmp_path):
         load_bones_library(str(clips), None)
 
 
+def test_bones_seed_packed_directory_restores_body_angular_velocity(tmp_path):
+    """A packed directory loads as one block and converts world ang vel back."""
+    import json
+
+    import numpy as np
+
+    from rlinf.envs.sim.g1_mimic.bones import load_bones_library
+    from rlinf.envs.sim.g1_mimic.constants import G1_JOINT_NAMES
+    from rlinf.envs.sim.g1_mimic.kinematics.features import quat_to_rotmat
+
+    lengths = (3, 2)
+    total = sum(lengths)
+    quat = torch.zeros(total, 4)
+    quat[:, 0] = 1.0
+    quat[3:] = torch.tensor([0.70710678, 0.0, 0.0, 0.70710678])
+    body_ang = torch.tensor(
+        [[0.2, -0.3, 0.4]] * total, dtype=torch.float32
+    )
+    world_ang = torch.einsum("tij,tj->ti", quat_to_rotmat(quat), body_ang)
+    root_pos = torch.zeros(total, 3)
+    root_pos[:, 2] = 0.8
+    joint_pos = torch.arange(total, dtype=torch.float32).unsqueeze(-1).repeat(1, 29) * 0.01
+    joint_vel = torch.zeros(total, 29)
+    lin_vel = torch.zeros(total, 3)
+    q0 = torch.linspace(-0.2, 0.2, 29)
+    pack = tmp_path / "packed"
+    pack.mkdir()
+    np.save(pack / "root_pos_w.npy", root_pos.numpy())
+    np.save(pack / "root_quat_w.npy", quat.numpy())
+    np.save(pack / "root_lin_vel_w.npy", lin_vel.numpy())
+    np.save(pack / "root_ang_vel_w.npy", world_ang.numpy())
+    np.save(pack / "joint_pos.npy", joint_pos.numpy())
+    np.save(pack / "joint_vel.npy", joint_vel.numpy())
+    np.save(pack / "motion_ends.npy", np.cumsum(lengths))
+    np.save(pack / "q0.npy", q0.numpy())
+    (pack / "joint_names.json").write_text(json.dumps(list(G1_JOINT_NAMES)))
+    (pack / "motion_names.json").write_text(json.dumps(["walk", "turn"]))
+
+    library = load_bones_library(str(pack), None)
+    assert library.clip_names == ["walk", "turn"]
+    assert library.lengths.tolist() == [3, 2]
+    assert library.frames.device.type == "cpu"
+    assert library.filter_counts["packed"] is True
+    assert library.filter_counts["kept"] == 2
+    assert torch.allclose(library.q0, q0)
+    assert torch.allclose(library.frames[:, 39:42], body_ang, atol=1e-5)
+    assert torch.allclose(library.frames[:, 7:36], joint_pos)
+    assert library._kin_cache_dir == pack / "body_kinematics"
+
+    first = load_bones_library(str(pack), 1)
+    assert first.num_clips == 1
+    assert first.num_frames == 3
+    assert first.clip_names == ["walk"]
+
+
 def test_bones_seed_motion_format_passes_config_checks():
     cfg = _compose(
         "supermimic_lafan1_gencoord",
@@ -1497,6 +1552,94 @@ def test_reference_fk_matches_online_fk(storage, query):
     for actual, wanted in zip(result, expected, strict=True):
         assert actual.device == ids.device
         torch.testing.assert_close(actual, wanted, atol=2e-5, rtol=2e-5)
+
+
+@needs_mjlab
+def test_body_kinematics_cache_is_reused(tmp_path):
+    """One writer stores the full-library kinematics; the next process maps it."""
+    import threading
+    import time
+
+    from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import (
+        asset_default_state,
+        g1_kinematics,
+    )
+
+    pose = asset_default_state()
+    frames = pose.repeat(5, 1)
+    frames[:, 0] = torch.arange(5, dtype=torch.float32)
+    ends = torch.tensor([5])
+    cache = tmp_path / "body_kinematics"
+    kin = g1_kinematics()
+    kin.forward(frames[:1], compile=False)
+    calls: list[int] = []
+    original = kin.forward
+
+    def counted(state, compile=True):
+        if state.shape[0] > 1:
+            calls.append(int(state.shape[0]))
+            time.sleep(0.3)
+        return original(state, compile=compile)
+
+    rows = torch.tensor([0, 4, 2])
+    kin.forward = counted
+    results: list[tuple[torch.Tensor, ...]] = []
+    errors: list[BaseException] = []
+
+    def load_once():
+        try:
+            library = MotionLibrary.from_block(
+                frames.clone(), ends.clone(), kin_cache_dir=cache
+            )
+            results.append(library.body_state(rows))
+        except BaseException as exc:
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=load_once) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        assert errors == []
+        assert all(not thread.is_alive() for thread in threads)
+        assert calls == [5]
+        assert len(results) == 2
+        for part_a, part_b in zip(results[0], results[1], strict=True):
+            torch.testing.assert_close(part_a, part_b, atol=0, rtol=0)
+        expected = original(frames, compile=False)
+        for actual, wanted in zip(results[0], expected, strict=True):
+            torch.testing.assert_close(actual, wanted[rows], atol=0, rtol=0)
+
+        def refuse_recompute(state, compile=True):
+            if state.shape[0] > 1:
+                raise AssertionError("a warm cache must not walk the kinematic tree")
+            return original(state, compile=compile)
+
+        kin.forward = refuse_recompute
+        fresh = MotionLibrary.from_block(
+            frames.clone(), ends.clone(), kin_cache_dir=cache
+        )
+        again = fresh.body_state(rows)
+        for actual, wanted in zip(again, results[0], strict=True):
+            torch.testing.assert_close(actual, wanted, atol=0, rtol=0)
+        stored = [path for path in cache.iterdir() if path.name != ".lock"]
+        assert len(stored) == 1 and stored[0].is_dir()
+        for name in ("pos.npy", "rot.npy", "lin.npy", "ang.npy", "meta.json", "ready"):
+            assert (stored[0] / name).is_file()
+
+        shifted = frames.clone()
+        shifted[:, 0] = shifted[:, 0] + 1
+        kin.forward = counted
+        calls.clear()
+        other = MotionLibrary.from_block(shifted, ends.clone(), kin_cache_dir=cache)
+        moved = other.body_state(torch.tensor([0]))
+        assert calls == [5]
+        assert not torch.equal(moved[0], again[0][:1])
+        written = [path for path in cache.iterdir() if path.name != ".lock"]
+        assert len(written) == 2
+    finally:
+        kin.forward = original
 
 
 @needs_warp

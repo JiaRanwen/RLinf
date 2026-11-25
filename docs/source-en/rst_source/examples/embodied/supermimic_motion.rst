@@ -62,6 +62,8 @@ A successful run ends with:
 
 Loading keeps clips whose names match the terms named in Appendix E: 135,798 of 142,220. The paper's name filter keeps 129,667, and it does not publish the full term list.
 
+A directory of ``clip_*.pt`` files opens every file on each launch. Point ``SUPERMIMIC_MOTION_PATH`` at a packed directory instead: ``joint_pos.npy``, ``joint_vel.npy``, the four root ``.npy`` fields, ``motion_ends.npy``, and ``joint_names.json``. ``root_ang_vel_w`` is stored in the world frame and converted to the body frame on load. Optional ``q0.npy`` is the 29-d default joint pose; without it the loader uses mjlab's G1 keyframe. Optional ``motion_names.json`` names the clips. That directory is not read as one file per clip.
+
 The command below trains the GenCoord recipe for 20,000 updates.
 
 .. code-block:: bash

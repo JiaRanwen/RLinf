@@ -62,6 +62,8 @@ BONES-SEED（实验性）
 
 加载时按附录 E 点名的词过滤，142,220 条留下 135,798 条。论文的名字过滤留下 129,667 条，完整词表没有公布。
 
+``clip_*.pt`` 目录每次启动都会逐个打开文件再过滤。把筛过的片段打成官方那种目录后，把 ``SUPERMIMIC_MOTION_PATH`` 指到该目录即可：里面是 ``joint_pos.npy``、``joint_vel.npy``、四个根状态 ``.npy``、``motion_ends.npy`` 和 ``joint_names.json``。``root_ang_vel_w`` 按世界系存放，加载时转回身体系。可选的 ``q0.npy`` 是 29 维默认关节角，没有则用 mjlab 的 G1 关键帧。可选的 ``motion_names.json`` 是片段名。这种目录不再逐个读 ``clip_*.pt``。
+
 下面在 GenCoord 配置上训练 20,000 次更新。
 
 .. code-block:: bash
