@@ -282,6 +282,19 @@ def _interp_weights(
     return idx, u
 
 
+def resample_series(
+    values: torch.Tensor, src_fps: float, dst_fps: float = CONTROL_FPS
+) -> torch.Tensor:
+    """Linear resample of a per-frame array onto the control-time grid."""
+    values = torch.as_tensor(values, dtype=torch.float32)
+    count = int(values.shape[0])
+    src_t, dst_t, _dt = control_time_grid(count, src_fps, dst_fps)
+    idx, u = _interp_weights(src_t, dst_t, count)
+    shape = [u.shape[0]] + [1] * (values.ndim - 1)
+    u = u.to(dtype=values.dtype).reshape(shape)
+    return (1.0 - u) * values[idx - 1] + u * values[idx]
+
+
 def _central_difference(values: torch.Tensor, dt: float) -> torch.Tensor:
     """Rate at each sample: central inside, one-sided at the two ends."""
     rate = torch.empty_like(values)

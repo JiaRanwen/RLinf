@@ -100,7 +100,7 @@ class ConvertSummary:
 def default_q0():
     """mjlab's G1 default joint pose, the ``q0`` the simulator requires."""
     try:
-        from rlinf.envs.sim.g1_mimic.g1_fk import asset_default_state
+        from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import asset_default_state
     except ImportError as exc:
         raise SystemExit(
             "convert_bones_seed needs mjlab to read the G1 default pose. "
@@ -119,7 +119,7 @@ def euler_xyz_extrinsic_to_wxyz(euler_deg):
 
     import torch
 
-    from rlinf.envs.sim.g1_mimic.features import quat_mul, quat_normalize
+    from rlinf.envs.sim.g1_mimic.kinematics.features import quat_mul, quat_normalize
 
     half = euler_deg * (math.pi / 180.0) * 0.5
     cosine = torch.cos(half)
@@ -289,7 +289,7 @@ def state_from_csv_columns(position_cm, euler_deg, joints_deg):
 def resample_csv_state(state, input_fps: float, output_fps: float):
     """Resample a CSV-rate state onto ``output_fps`` and keep quaternions continuous."""
     from rlinf.envs.sim.g1_mimic.constants import ROOT_QUAT
-    from rlinf.envs.sim.g1_mimic.motion import resample_states
+    from rlinf.envs.sim.g1_mimic.tasks.motion import resample_states
 
     converted = resample_states(state, float(input_fps), float(output_fps))
     converted = converted.clone()

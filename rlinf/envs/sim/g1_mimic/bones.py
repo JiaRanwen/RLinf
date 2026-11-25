@@ -33,8 +33,8 @@ from pathlib import Path
 
 import torch
 
-from rlinf.envs.sim.g1_mimic.features import projected_gravity
-from rlinf.envs.sim.g1_mimic.motion import (
+from rlinf.envs.sim.g1_mimic.kinematics.features import projected_gravity
+from rlinf.envs.sim.g1_mimic.tasks.motion import (
     MotionLibrary,
     control_time_grid,
     decode_motion_payload,

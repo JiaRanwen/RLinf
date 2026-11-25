@@ -62,7 +62,7 @@ def process(
 
     from rlinf.envs.sim.g1_mimic.bones import feasibility_reason, name_rejected
     from rlinf.envs.sim.g1_mimic.bones_geometry import G1FloorDistance
-    from rlinf.envs.sim.g1_mimic.motion import decode_motion_payload
+    from rlinf.envs.sim.g1_mimic.tasks.motion import decode_motion_payload
 
     files = sorted(clips_dir.glob("clip_*.pt"))
     if limit > 0:
