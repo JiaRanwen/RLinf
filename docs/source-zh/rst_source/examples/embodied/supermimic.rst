@@ -139,7 +139,7 @@ Docker 构建方式见 :doc:`g1_mimic`，AMD ROCm 平台见 :ref:`在其他硬�
 
    [lafan1] wrote 40 clips, 2.45 h, manifest /data/lafan1_g1/manifest.json
 
-如需在另一台联网机器离线转换或制作自定义 ``clip_*.pt`` 片段，见 :doc:`supermimic_motion`。
+如需在另一台联网机器离线转换、使用实验性 BONES-SEED 或制作自定义 ``clip_*.pt`` 片段，见 :doc:`supermimic_motion`。
 
 运行
 ----

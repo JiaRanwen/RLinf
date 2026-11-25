@@ -139,7 +139,7 @@ A successful run ends with:
 
    [lafan1] wrote 40 clips, 2.45 h, manifest /data/lafan1_g1/manifest.json
 
-For offline conversion on a separate internet-connected machine or custom ``clip_*.pt`` files, see :doc:`supermimic_motion`.
+For offline conversion on a separate internet-connected machine, the experimental BONES-SEED path, or custom ``clip_*.pt`` files, see :doc:`supermimic_motion`.
 
 Run It
 ------

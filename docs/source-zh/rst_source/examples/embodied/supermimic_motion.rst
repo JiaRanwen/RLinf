@@ -1,7 +1,7 @@
 G1 动作数据准备
 ===============
 
-为 :doc:`G1 动作跟踪环境 <g1_mimic>` 和 :doc:`SuperMimic <supermimic>` 准备参考动作片段，包括 LAFAN1 离线转换以及自定义 ``clip_*.pt`` 文件格式。
+为 :doc:`G1 动作跟踪环境 <g1_mimic>` 和 :doc:`SuperMimic <supermimic>` 准备参考动作片段，包括 LAFAN1 离线转换、实验性 BONES-SEED 以及自定义 ``clip_*.pt`` 文件格式。
 
 安装
 ----
@@ -28,6 +28,66 @@ G1 动作数据准备
           --q0-file /path/to/g1_q0.pt --accept-license
 
 4. 将整个 ``/data/lafan1_g1`` 目录（含 ``manifest.json``）复制到训练机器，并将 ``SUPERMIMIC_MOTION_PATH`` 指向这个目录。
+
+BONES-SEED（实验性）
+--------------------
+
+公开的 G1 重定向数据在 Hugging Face 数据集 `bones-studio/seed <https://huggingface.co/datasets/bones-studio/seed>`_。训练用其中的 ``g1.tar.gz`` 和 ``LICENSE.md``。在网页上接受许可并阅读 ``LICENSE.md`` 后下载、解压：
+
+.. code-block:: bash
+
+   huggingface-cli download bones-studio/seed g1.tar.gz LICENSE.md \
+       --repo-type dataset --local-dir /data/bones-seed
+   tar -xzf /data/bones-seed/g1.tar.gz -C /data/bones-seed
+
+数据集要求登录时，先执行 ``huggingface-cli login``。CSV 位于解压后的 ``g1/csv/``。
+
+转换脚本把 120 Hz 的 CSV 重采样为 50 Hz 的 ``clip_*.pt``，这一步保留全部片段：
+
+.. code-block:: bash
+
+   python toolkits/supermimic/convert_bones_seed.py \
+       --input /data/bones-seed/g1/csv \
+       --output /data/bones_g1 \
+       --jobs 16
+   export SUPERMIMIC_MOTION_PATH=/data/bones_g1
+
+成功时最后一行是：
+
+.. code-block:: text
+
+   [bones-seed] done: 142220 converted, 0 skipped, 0 failed
+
+加载时按附录 E 点名的词过滤，142,220 条留下 135,798 条。论文的名字过滤留下 129,667 条，完整词表没有公布。
+
+下面在 GenCoord 配置上训练 20,000 次更新。
+
+.. code-block:: bash
+
+   export RUN_DIR=/data/runs/bones_gencoord
+   python examples/embodiment/train_embodied_agent.py \
+       --config-name supermimic_lafan1_gencoord \
+       runner.logger.log_path=$RUN_DIR actor.cuda_graph=True \
+       runner.max_epochs=20000 \
+       env.train.motion_format=bones_seed env.train.num_clips=null \
+       env.eval.motion_format=bones_seed
+
+日志里的 ``kept`` 应为 135798。
+
+评测从第 0 帧播放这 135,798 条片段。``env.eval.total_num_envs`` 与 ``env.eval.rollout_epoch`` 的乘积要不少于这个数量，下面的 16,384 和 9 满足该条件，由四张 GPU 分担环境。``max_steps_per_rollout_epoch`` 取保留片段里最长的控制步数（帧数减 1）。小于最长片段时，评测会在开始前退出，报错里的 ``the longest evaluation job runs <N> control steps`` 给出这个步数，改成 N 再启动。
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh supermimic_lafan1_eval \
+       runner.ckpt_path=$RUN_DIR/supermimic_lafan1_gencoord/checkpoints/global_step_20000/actor/model_state_dict/full_weights.pt \
+       runner.eval_export.output_dir=$RUN_DIR/eval_20000 \
+       env.eval.motion_format=bones_seed \
+       env.eval.num_clips=null \
+       env.eval.total_num_envs=16384 \
+       env.eval.rollout_epoch=9 \
+       env.eval.max_steps_per_rollout_epoch=<N> \
+       '~cluster.component_placement' \
+       '+cluster.component_placement={env:0-3,rollout:0-3}'
 
 运行
 ----

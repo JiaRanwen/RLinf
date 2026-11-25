@@ -240,7 +240,7 @@ Differences from the Paper and Official Code
      - Multi-GPU FSDP2 with one env, rollout, and actor worker per GPU and global batching
    * - Default dataset
      - Paper main result uses filtered BONES-SEED; official default pulls one W&B clip
-     - Local 40 LAFAN1 clips
+     - Local 40 LAFAN1 clips; experimental BONES-SEED is in :doc:`../../examples/embodied/supermimic_motion`
 
 Limitations
 -----------
@@ -248,6 +248,7 @@ Limitations
 * Velocity tracking is not implemented.
 * Standing push recovery uses mjlab's knees-bent keyframe rather than the Section 4.3 T-pose.
 * Multi-node training and resuming across different GPU counts are unvalidated.
+* The BONES-SEED name filter uses only the terms named in Appendix E and keeps 135,798 of 142,220 clips. The paper's name filter keeps 129,667 and leaves the full term list unpublished.
 
 Acknowledgments
 ---------------
