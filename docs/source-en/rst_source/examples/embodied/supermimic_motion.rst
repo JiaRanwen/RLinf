@@ -93,6 +93,60 @@ Evaluation plays each of the 135,798 kept clips from frame 0. The product of ``e
        '~cluster.component_placement' \
        '+cluster.component_placement={env:0-3,rollout:0-3}'
 
+This training run
+~~~~~~~~~~~~~~~~~
+
+The name filter keeps 135,798 clips. One GenCoord run on 4 GPUs in bf16 trained them for 80,000 updates, saved the 20,000 and 80,000 checkpoints, and evaluated both on the full library. The 80,000 evaluation took 2 h 13 min.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 22 18 24 22
+
+   * - Updates
+     - ``normalized_return``
+     - Falls
+     - ``body_pos_err`` (m)
+     - ``torso_ori_err``
+   * - 80000
+     - 0.937
+     - 421 (0.310%)
+     - 0.021
+     - 0.079
+   * - 20000
+     - 0.927
+     - 830 (0.611%)
+     - 0.023
+     - —
+
+On the 80,000 checkpoint, 0.997 of the 135,798 clips play to the end. A clip lasts 7.34 s on average.
+
+Numbers recorded during training. The per-step tracking reward tops out at 0.1.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 18 20 22 24
+
+   * - Updates
+     - Step reward
+     - Fall fraction
+     - Actor return
+     - ``state_loss``
+   * - 20000
+     - 0.085
+     - 0.0028
+     - 13.84
+     - 0.0091
+   * - 40000
+     - 0.086
+     - 0.0032
+     - 13.91
+     - 0.0072
+   * - 80000
+     - 0.087
+     - 0.0033
+     - 14.04
+     - 0.0077
+
 Run It
 ------
 
