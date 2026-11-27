@@ -51,7 +51,7 @@ G1 动作跟踪环境
      - 回合上限与失败条件
      - 默认配置
    * - 动作跟踪（``tracking``）
-     - 40 条 LAFAN1 片段（或自定义 ``clip_*.pt`` 片段）
+     - 40 条 LAFAN1 片段（或自定义 ``clip_*.pt``、实验性 BONES-SEED）
      - 训练上限 10 秒（评测播完全片）；片段结束或摔倒时终止
      - ``supermimic_lafan1_gencoord`` / ``supermimic_lafan1_eval``
    * - 站立推力恢复（``push_recovery``）
@@ -138,7 +138,7 @@ G1 动作跟踪环境
      - 存放转换后 ``clip_*.pt`` 文件的目录
    * - ``motion_format``
      - ``lafan1``
-     - 动作库加载格式（``lafan1``）
+     - 动作库格式：``lafan1`` 或实验性\ ``bones_seed``
    * - ``num_clips``
      - ``null``\ （默认训练配置为 ``40``）
      - 加载片段数量；``null`` 加载目录下全部片段
@@ -155,7 +155,7 @@ G1 动作跟踪环境
 安装与运行
 ----------
 
-请先按 :doc:`SuperMimic <supermimic>` 页面的 :ref:`安装与运行 <supermimic-hardware>` 完成 ``.venv-supermimic`` 环境安装（支持 NVIDIA CUDA 与 AMD ROCm）并将 40 条 LAFAN1 片段准备到 ``./data/lafan1_g1``\ （离线转换或自定义片段见 :doc:`supermimic_motion`）。
+请先按 :doc:`SuperMimic <supermimic>` 页面的 :ref:`安装与运行 <supermimic-hardware>` 完成 ``.venv-supermimic`` 环境安装（支持 NVIDIA CUDA 与 AMD ROCm）并将 40 条 LAFAN1 片段准备到 ``./data/lafan1_g1``。自定义 ``clip_*.pt`` 和实验性 BONES-SEED 见 :doc:`supermimic_motion`。
 
 .. tab-set::
 
@@ -180,5 +180,5 @@ G1 动作跟踪环境
 
 * **SuperMimic 算法详解、多卡训练、MaxCoord 与实验结果：** :doc:`supermimic`
 * **独立评测（动作跟踪与站立推力恢复）：** :doc:`../../evaluations/guides/supermimic`
-* **自定义动作数据与离线转换：** :doc:`supermimic_motion`
+* **自定义动作数据、离线转换和实验性 BONES-SEED：** :doc:`supermimic_motion`
 * **算法公式与实现参考：** :doc:`../../reference/algorithms/supermimic`

@@ -51,7 +51,7 @@ The environment supports two task modes selected by the training or evaluation c
      - Episode Limit & Failure
      - Default Config
    * - Motion tracking (``tracking``)
-     - 40 LAFAN1 clips (or custom ``clip_*.pt`` clips)
+     - 40 LAFAN1 clips (or custom ``clip_*.pt`` files, or experimental BONES-SEED)
      - 10 s in training (full clip in eval); ends on clip end or fall
      - ``supermimic_lafan1_gencoord`` / ``supermimic_lafan1_eval``
    * - Standing push recovery (``push_recovery``)
@@ -138,7 +138,7 @@ The default preset lives in ``examples/embodiment/config/env/g1_mimic.yaml``. Co
      - Directory containing converted ``clip_*.pt`` files
    * - ``motion_format``
      - ``lafan1``
-     - Dataset loader format (``lafan1``)
+     - Motion-library format: ``lafan1`` or experimental ``bones_seed``
    * - ``num_clips``
      - ``null`` (``40`` in recipe)
      - Number of clips to load; ``null`` loads every clip in ``motion_path``
@@ -155,7 +155,7 @@ The default preset lives in ``examples/embodiment/config/env/g1_mimic.yaml``. Co
 Setup and Run
 -------------
 
-Follow :ref:`Setup and Run <supermimic-hardware>` on the :doc:`SuperMimic <supermimic>` page to install the ``.venv-supermimic`` environment (NVIDIA CUDA or AMD ROCm) and prepare the 40 LAFAN1 clips into ``./data/lafan1_g1`` (or prepare custom ``clip_*.pt`` files via :doc:`supermimic_motion`).
+Follow :ref:`Setup and Run <supermimic-hardware>` on the :doc:`SuperMimic <supermimic>` page to install the ``.venv-supermimic`` environment (NVIDIA CUDA or AMD ROCm) and prepare the 40 LAFAN1 clips into ``./data/lafan1_g1``. Custom ``clip_*.pt`` files and the experimental BONES-SEED path are in :doc:`supermimic_motion`.
 
 .. tab-set::
 
@@ -180,5 +180,5 @@ Next Steps
 
 * **Algorithm guide, multi-GPU scaling, MaxCoord, and results:** :doc:`supermimic`
 * **Standalone evaluation (motion tracking & standing push recovery):** :doc:`../../evaluations/guides/supermimic`
-* **Custom motion clips and offline conversion:** :doc:`supermimic_motion`
+* **Custom motion clips, offline conversion, and experimental BONES-SEED:** :doc:`supermimic_motion`
 * **Algorithm equations and implementation details:** :doc:`../../reference/algorithms/supermimic`

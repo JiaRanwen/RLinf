@@ -120,7 +120,7 @@ SuperMimic 算法原理
 
          python toolkits/supermimic/prepare_lafan1.py --out ./data/lafan1_g1 --accept-license
 
-      转换成功后最后一行输出 ``[lafan1] wrote 40 clips, 2.45 h, manifest data/lafan1_g1/manifest.json``。如需离线转换或制作自定义 ``clip_*.pt`` 片段，见 :doc:`supermimic_motion`。
+      转换成功后最后一行输出 ``[lafan1] wrote 40 clips, 2.45 h, manifest data/lafan1_g1/manifest.json``。如需离线转换、实验性 BONES-SEED 或自定义 ``clip_*.pt``\ 片段，见 :doc:`supermimic_motion`。
 
       **3. 启动训练**
 

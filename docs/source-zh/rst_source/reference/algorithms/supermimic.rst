@@ -264,7 +264,7 @@ SuperMimic 将想象轨迹上的回报沿着可微世界模型反向传播，用
      - 多卡 FSDP2，每卡一组 env、rollout 与 actor worker，全局批量一致
    * - 默认数据
      - 论文主结果为过滤后的 BONES-SEED；官方默认下载单条 W&B 片段
-     - 本地 40 条 LAFAN1 片段
+     - 本地 40 条 LAFAN1 片段；实验性 BONES-SEED 见 :doc:`../../examples/embodied/supermimic_motion`
 
 已知限制
 --------
@@ -272,6 +272,7 @@ SuperMimic 将想象轨迹上的回报沿着可微世界模型反向传播，用
 * 尚未实现速度跟踪。
 * 站立推力恢复采用 mjlab 屈膝站立姿态，而非论文第 4.3 节的 T-pose。
 * 多节点训练与变更 GPU 数量续训尚未验证。
+* BONES-SEED 名字过滤只用附录 E 点名的词，142,220 条留下 135,798 条。论文的名字过滤留下 129,667 条，完整词表没有公布。
 
 致谢
 ----

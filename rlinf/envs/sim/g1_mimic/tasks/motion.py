@@ -19,6 +19,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import time
+import warnings
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +41,7 @@ from rlinf.envs.sim.g1_mimic.constants import (
     JOINT_VEL,
     ROOT_ANG_VEL,
     ROOT_LIN_VEL,
+    ROOT_POS,
     ROOT_QUAT,
     STATE_DIM,
 )
@@ -48,6 +53,49 @@ from rlinf.envs.sim.g1_mimic.kinematics.features import (
     rotmat_to_6d,
     rotvec_from_quat,
 )
+
+
+# Bump when the on-disk body-kinematics layout changes. The file digest also
+# hashes one probe pose, so a change to the kinematic tree misses this file
+# even when the version stays put.
+_BODY_KIN_VERSION = 1
+_BODY_KIN_NAMES = ("pos", "rot", "lin", "ang")
+
+
+def _log_motion(message: str) -> None:
+    from rlinf.utils.logging import get_logger
+
+    get_logger().info(message)
+
+
+def _digest_array(digest: hashlib._Hash, array: object) -> None:
+    """Hash dtype, shape and bytes in chunks so a full library is not copied."""
+    import numpy as np
+
+    values = np.ascontiguousarray(array)
+    digest.update(str(values.dtype).encode())
+    digest.update(np.asarray(values.shape, dtype=np.int64).tobytes())
+    if values.size == 0:
+        return
+    raw = memoryview(values).cast("B")
+    step = 8 * 1024 * 1024
+    for start in range(0, raw.nbytes, step):
+        digest.update(raw[start : start + step])
+
+
+@contextmanager
+def _exclusive_lock(path: Path):
+    """Block until this process holds an exclusive lock on ``path``."""
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 def assemble_goals(
@@ -112,12 +160,68 @@ class MotionLibrary:
         # on the frames' storage device. The clips do not change, so training
         # gathers these instead of walking the kinematic tree again.
         self._kin_cache: tuple[torch.Tensor, ...] | None = None
+        self._kin_cache_dir: Path | None = None
         self.clip_names = [f"clip_{i:03d}" for i in range(len(clips))]
         self.q0 = (
             q0.float()
             if q0 is not None
             else torch.zeros(ACTION_DIM, dtype=torch.float32)
         )
+
+    @classmethod
+    def from_block(
+        cls,
+        frames: torch.Tensor,
+        ends: torch.Tensor,
+        q0: torch.Tensor | None = None,
+        names: list[str] | None = None,
+        kin_cache_dir: str | Path | None = None,
+    ) -> MotionLibrary:
+        """Build a library from one ``[sum_T, 71]`` block and exclusive ends.
+
+        ``ends[i]`` is the first row of the next clip. This skips concatenating
+        one tensor per clip, which is the packed-directory load.
+        ``kin_cache_dir`` stores the full-library body kinematics after the
+        first query. A later process maps those files instead of recomputing.
+        """
+        frames = frames.float().contiguous()
+        ends = ends.to(dtype=torch.long).reshape(-1).contiguous()
+        if frames.ndim != 2 or frames.shape[-1] != STATE_DIM:
+            raise ValueError(
+                f"packed frames have shape {tuple(frames.shape)}, expected [T, {STATE_DIM}]"
+            )
+        if ends.numel() == 0 or int(ends[-1]) != frames.shape[0]:
+            raise ValueError(
+                f"motion ends {tuple(ends.shape)} do not cover {frames.shape[0]} frames"
+            )
+        if int(ends[0]) < 1 or bool((ends[1:] <= ends[:-1]).any()):
+            raise ValueError("motion ends must be positive and strictly increasing")
+        if names is not None and len(names) != int(ends.numel()):
+            raise ValueError(
+                f"{len(names)} clip names for {int(ends.numel())} packed clips"
+            )
+        library = cls.__new__(cls)
+        library.ends = ends
+        library.lengths = ends.clone()
+        library.lengths[1:] = ends[1:] - ends[:-1]
+        library.offsets = ends - library.lengths
+        library.frames = frames
+        library._index_cache = {}
+        library._kin_cache = None
+        library._kin_cache_dir = (
+            None if kin_cache_dir is None else Path(kin_cache_dir)
+        )
+        library.clip_names = (
+            list(names)
+            if names is not None
+            else [f"clip_{i:03d}" for i in range(int(ends.numel()))]
+        )
+        library.q0 = (
+            q0.float()
+            if q0 is not None
+            else torch.zeros(ACTION_DIM, dtype=torch.float32)
+        )
+        return library
 
     @property
     def num_clips(self) -> int:
@@ -170,23 +274,198 @@ class MotionLibrary:
         """71-d reference states at global frames."""
         return self.frames[self._store(frame)].to(device=frame.device)
 
-    def _kinematics(self) -> tuple[torch.Tensor, ...]:
-        if self._kin_cache is None:
-            from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import g1_kinematics
+    def _kin_cache_identity(self) -> str:
+        """Digest of these frames and of one probe through the current tree."""
+        from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import (
+            TRACKED_BODY_NAMES,
+            g1_kinematics,
+        )
 
-            kin = g1_kinematics()
-            parts: list[tuple[torch.Tensor, ...]] = []
-            with torch.no_grad():
-                for start in range(0, self.num_frames, 4096):
-                    batch = self.frames[start : start + 4096]
-                    parts.append(
-                        tuple(
-                            item.detach() for item in kin.forward(batch, compile=False)
+        digest = hashlib.sha256()
+        digest.update(f"body-kinematics-v{_BODY_KIN_VERSION}".encode())
+        digest.update("\0".join(TRACKED_BODY_NAMES).encode())
+        probe = torch.zeros(1, STATE_DIM)
+        probe[:, ROOT_QUAT] = torch.tensor([1.0, 0.0, 0.0, 0.0])
+        probe[:, ROOT_POS] = torch.tensor([0.1, -0.2, 0.8])
+        probe[:, JOINT_POS] = 0.15
+        probe[:, ROOT_LIN_VEL] = torch.tensor([0.3, -0.1, 0.05])
+        probe[:, ROOT_ANG_VEL] = torch.tensor([0.2, -0.3, 0.4])
+        probe[:, JOINT_VEL] = -0.05
+        with torch.no_grad():
+            probed = g1_kinematics().forward(probe, compile=False)
+        for item in probed:
+            _digest_array(digest, item.detach().cpu().contiguous().numpy())
+        ends = self.ends.detach().cpu().contiguous()
+        _digest_array(digest, ends.numpy())
+        _digest_array(digest, self.frames.detach().cpu().numpy())
+        return digest.hexdigest()
+
+    def _compute_kinematics(self) -> tuple[torch.Tensor, ...]:
+        from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import g1_kinematics
+
+        kin = g1_kinematics()
+        total = self.num_frames
+        outputs: tuple[torch.Tensor, ...] | None = None
+        logged = time.monotonic()
+        with torch.no_grad():
+            for start in range(0, total, 4096):
+                batch = self.frames[start : start + 4096]
+                parts = tuple(
+                    item.detach() for item in kin.forward(batch, compile=False)
+                )
+                if outputs is None:
+                    outputs = tuple(
+                        torch.empty(
+                            total,
+                            *item.shape[1:],
+                            dtype=item.dtype,
+                            device=item.device,
                         )
+                        for item in parts
                     )
-            self._kin_cache = tuple(
-                torch.cat([part[i] for part in parts], dim=0) for i in range(4)
+                stop = start + parts[0].shape[0]
+                for dest, item in zip(outputs, parts, strict=True):
+                    dest[start:stop] = item
+                now = time.monotonic()
+                if now - logged >= 60.0:
+                    _log_motion(f"body kinematics computed {stop}/{total} frames")
+                    logged = now
+        if outputs is None:
+            raise RuntimeError("body kinematics received no frames")
+        return outputs
+
+    def _read_kin_cache(
+        self, dest: Path, identity: str
+    ) -> tuple[torch.Tensor, ...] | None:
+        import numpy as np
+
+        if not (dest / "ready").is_file() or not (dest / "meta.json").is_file():
+            return None
+        try:
+            meta = json.loads((dest / "meta.json").read_text())
+        except json.JSONDecodeError:
+            return None
+        shapes = meta.get("shapes")
+        if (
+            meta.get("version") != _BODY_KIN_VERSION
+            or meta.get("digest") != identity
+            or int(meta.get("num_frames", -1)) != self.num_frames
+            or meta.get("names") != list(_BODY_KIN_NAMES)
+            or not isinstance(shapes, list)
+            or len(shapes) != len(_BODY_KIN_NAMES)
+        ):
+            return None
+        tensors = []
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="The given NumPy array is not writable",
+                )
+                for name, shape in zip(_BODY_KIN_NAMES, shapes, strict=True):
+                    path = dest / f"{name}.npy"
+                    array = np.load(path, mmap_mode="c")
+                    if array.dtype != np.float32 or list(array.shape) != list(shape):
+                        return None
+                    if int(array.shape[0]) != self.num_frames:
+                        return None
+                    if path.stat().st_size < array.nbytes:
+                        return None
+                    tensors.append(torch.from_numpy(array))
+        except (OSError, ValueError, EOFError):
+            return None
+        return tuple(tensors)
+
+    def _write_kin_cache(
+        self, dest: Path, identity: str, tensors: tuple[torch.Tensor, ...]
+    ) -> None:
+        import numpy as np
+
+        if len(tensors) != len(_BODY_KIN_NAMES):
+            raise RuntimeError(
+                f"body kinematics returned {len(tensors)} tensors, "
+                f"expected {len(_BODY_KIN_NAMES)}"
             )
+        dest.mkdir(parents=True, exist_ok=True)
+        os.chmod(dest, 0o755)
+        ready = dest / "ready"
+        if ready.exists():
+            ready.unlink()
+        shapes = []
+        for name, tensor in zip(_BODY_KIN_NAMES, tensors, strict=True):
+            array = tensor.detach().contiguous().numpy()
+            if array.dtype != np.float32:
+                array = np.asarray(array, dtype=np.float32)
+            partial = dest / f"{name}.npy.partial"
+            with partial.open("wb") as handle:
+                np.save(handle, array)
+            final = dest / f"{name}.npy"
+            os.replace(partial, final)
+            os.chmod(final, 0o644)
+            shapes.append(list(array.shape))
+            _log_motion(f"wrote {final} shape {tuple(array.shape)}")
+        meta = {
+            "version": _BODY_KIN_VERSION,
+            "digest": identity,
+            "num_frames": self.num_frames,
+            "dtype": "float32",
+            "names": list(_BODY_KIN_NAMES),
+            "shapes": shapes,
+        }
+        meta_partial = dest / "meta.json.partial"
+        meta_partial.write_text(json.dumps(meta))
+        os.replace(meta_partial, dest / "meta.json")
+        os.chmod(dest / "meta.json", 0o644)
+        ready_partial = dest / "ready.partial"
+        ready_partial.write_text("ok\n")
+        os.replace(ready_partial, ready)
+        os.chmod(ready, 0o644)
+
+    def _kinematics(self) -> tuple[torch.Tensor, ...]:
+        """Tracked-body position, rotation, linear and angular velocity.
+
+        The four tensors cover every frame. With a cache directory set, one
+        process writes them and the others map those files. The directory
+        name is a digest of the frames and of one probe pose, so a different
+        clip or a changed kinematic tree does not reuse the file.
+        """
+        if self._kin_cache is not None:
+            return self._kin_cache
+        cache_dir = self._kin_cache_dir
+        if cache_dir is None or self.frames.device.type != "cpu":
+            self._kin_cache = self._compute_kinematics()
+            return self._kin_cache
+        _log_motion(
+            f"body kinematics: {self.num_frames} frames, cache directory {cache_dir}"
+        )
+        with _exclusive_lock(cache_dir / ".lock"):
+            identity = self._kin_cache_identity()
+            dest = cache_dir / identity
+            cached = self._read_kin_cache(dest, identity)
+            if cached is None:
+                started = time.monotonic()
+                _log_motion(
+                    "computing body kinematics for "
+                    f"{self.num_frames} frames into {dest}"
+                )
+                computed = self._compute_kinematics()
+                self._write_kin_cache(dest, identity, computed)
+                del computed
+                import gc
+
+                gc.collect()
+                cached = self._read_kin_cache(dest, identity)
+                if cached is None:
+                    raise RuntimeError(
+                        f"body kinematics cache at {dest} could not be read back"
+                    )
+                elapsed = time.monotonic() - started
+                _log_motion(
+                    f"wrote body kinematics cache {dest} in {elapsed:.0f}s"
+                )
+            else:
+                _log_motion(f"loaded body kinematics cache {dest}")
+            self._kin_cache = cached
         return self._kin_cache
 
     def body_state(
@@ -280,6 +559,19 @@ def _interp_weights(
     t1 = src_t[idx]
     u = (dst_t - t0) / (t1 - t0).clamp_min(1e-12)
     return idx, u
+
+
+def resample_series(
+    values: torch.Tensor, src_fps: float, dst_fps: float = CONTROL_FPS
+) -> torch.Tensor:
+    """Linear resample of a per-frame array onto the control-time grid."""
+    values = torch.as_tensor(values, dtype=torch.float32)
+    count = int(values.shape[0])
+    src_t, dst_t, _dt = control_time_grid(count, src_fps, dst_fps)
+    idx, u = _interp_weights(src_t, dst_t, count)
+    shape = [u.shape[0]] + [1] * (values.ndim - 1)
+    u = u.to(dtype=values.dtype).reshape(shape)
+    return (1.0 - u) * values[idx - 1] + u * values[idx]
 
 
 def _central_difference(values: torch.Tensor, dt: float) -> torch.Tensor:
@@ -450,10 +742,20 @@ def load_motion_library(
 
 
 def build_motion_library(env_cfg: DictConfig, device: torch.device) -> MotionLibrary:
-    """Load the LAFAN1 motion library configured by ``env_cfg``."""
+    """Load the motion library configured by ``env_cfg``.
+
+    ``lafan1`` reads manifest-checked clips. ``bones_seed`` is the experimental
+    Appendix E loader: it filters by clip name, keeps the library on CPU, and
+    does not read ``manifest.json``.
+    """
     motion_format = str(env_cfg.get("motion_format", "lafan1"))
     num_clips = env_cfg.get("num_clips", None)
     num_clips = None if num_clips is None else int(num_clips)
+    if motion_format == "bones_seed":
+        # Lazy import: the filter module imports this file's payload decoder.
+        from rlinf.envs.sim.g1_mimic.bones import load_bones_library
+
+        return load_bones_library(str(env_cfg.get("motion_path", "")), num_clips)
     if motion_format == "lafan1":
         # motion_on_cpu keeps the frames in host memory; queries gather rows
         # there and copy only those rows to the simulator device.

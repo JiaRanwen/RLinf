@@ -120,7 +120,7 @@ Setup and Run
 
          python toolkits/supermimic/prepare_lafan1.py --out ./data/lafan1_g1 --accept-license
 
-      A successful run ends with ``[lafan1] wrote 40 clips, 2.45 h, manifest data/lafan1_g1/manifest.json``. For offline conversion or custom ``clip_*.pt`` files, see :doc:`supermimic_motion`.
+      A successful run ends with ``[lafan1] wrote 40 clips, 2.45 h, manifest data/lafan1_g1/manifest.json``. For offline conversion, the experimental BONES-SEED path, or custom ``clip_*.pt`` files, see :doc:`supermimic_motion`.
 
       **3. Launch**
 

@@ -85,7 +85,7 @@ The matrix below covers benchmarks with ready-to-run configs under ``evaluations
      - ``simple/simple_psi0_eval.yaml``
      - :doc:`Psi0 <../examples/embodied/psi0>`
    * - :doc:`SuperMimic <guides/supermimic>`
-     - LAFAN1 reference motion; GenCoord and MaxCoord; standing push recovery
+     - LAFAN1 reference motion; experimental BONES-SEED; GenCoord and MaxCoord; standing push recovery
      - ``supermimic/supermimic_lafan1_eval.yaml``, ``supermimic/supermimic_push_recovery.yaml``
      - :doc:`SuperMimic <../examples/embodied/supermimic>`
    * - :doc:`RealWorld <guides/realworld>`

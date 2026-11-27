@@ -14,14 +14,16 @@
 
 """Numerical checks of the SuperMimic objectives, reset sampler, update
 cadence, evaluation guards, training config limits, input norms, state
-representations, networks and simulator. None needs Ray. The two-rank check
-needs Gloo, the kinematics, representation and network checks need mjlab, and
-the MuJoCo Warp check needs mjlab and a CUDA device.
+representations, networks, the experimental BONES-SEED loader, and the
+simulator. None needs Ray. The two-rank check needs Gloo, the kinematics,
+representation and network checks need mjlab, and the MuJoCo Warp check
+needs mjlab and a CUDA device.
 """
 
 import importlib.util
 import math
 import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -472,6 +474,125 @@ def test_exported_config_records_the_motion_path(tmp_path, monkeypatch):
     )
     saved = OmegaConf.load(tmp_path / "config.yaml")
     assert saved.env.eval.motion_path == "/data/lafan1_g1"
+
+
+def _load_script(relative: str, module_name: str):
+    path = Path(__file__).resolve().parents[2] / relative
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_bones_seed_synthetic_csv_keeps_the_walk_and_drops_the_stair(tmp_path):
+    """A synthetic G1 CSV converts without an official file or mjlab.
+
+    The name filter drops the stair clip. The kept library stays on CPU.
+    """
+    from rlinf.envs.sim.g1_mimic.bones import load_bones_library, name_rejected
+    from rlinf.envs.sim.g1_mimic.constants import ACTION_DIM, G1_JOINT_NAMES
+
+    convert = _load_script(
+        "toolkits/supermimic/convert_bones_seed.py", "convert_bones_seed"
+    )
+    assert name_rejected("walk_on_stair")
+    assert not name_rejected("walk_forward")
+    header = [
+        "Frame",
+        *convert.ROOT_POS_COLUMNS,
+        *convert.ROOT_EULER_COLUMNS,
+        *[f"{name}_dof" for name in G1_JOINT_NAMES],
+    ]
+    row = ",".join(["0"] * len(header))
+    body = "\n".join([",".join(header), *([row] * 8)])
+    q0 = torch.zeros(ACTION_DIM)
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    for relative in (Path("2020-01-01/walk.csv"), Path("2020-01-01/climb_stair.csv")):
+        csv_path = tmp_path / "csv" / relative
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(body + "\n")
+        payload = convert.build_payload(csv_path, relative, q0, 120.0, 50.0)
+        assert payload["name"] == relative.with_suffix("").as_posix()
+        torch.save(payload, clips / convert.output_filename(relative))
+    library = load_bones_library(str(clips), None)
+    assert library.clip_names == ["2020-01-01/walk"]
+    assert library.frames.device.type == "cpu"
+    assert library.filter_counts["rejected_name"] == 1
+    assert library.filter_counts["kept"] == 1
+    nameless = dict(torch.load(clips / "clip_2020-01-01__walk.pt", weights_only=True))
+    del nameless["name"]
+    torch.save(nameless, clips / "clip_nameless.pt")
+    with pytest.raises(ValueError, match="no clip name"):
+        load_bones_library(str(clips), None)
+
+
+def test_bones_seed_packed_directory_restores_body_angular_velocity(tmp_path):
+    """A packed directory loads as one block and converts world ang vel back."""
+    import json
+
+    import numpy as np
+
+    from rlinf.envs.sim.g1_mimic.bones import load_bones_library
+    from rlinf.envs.sim.g1_mimic.constants import G1_JOINT_NAMES
+    from rlinf.envs.sim.g1_mimic.kinematics.features import quat_to_rotmat
+
+    lengths = (3, 2)
+    total = sum(lengths)
+    quat = torch.zeros(total, 4)
+    quat[:, 0] = 1.0
+    quat[3:] = torch.tensor([0.70710678, 0.0, 0.0, 0.70710678])
+    body_ang = torch.tensor(
+        [[0.2, -0.3, 0.4]] * total, dtype=torch.float32
+    )
+    world_ang = torch.einsum("tij,tj->ti", quat_to_rotmat(quat), body_ang)
+    root_pos = torch.zeros(total, 3)
+    root_pos[:, 2] = 0.8
+    joint_pos = torch.arange(total, dtype=torch.float32).unsqueeze(-1).repeat(1, 29) * 0.01
+    joint_vel = torch.zeros(total, 29)
+    lin_vel = torch.zeros(total, 3)
+    q0 = torch.linspace(-0.2, 0.2, 29)
+    pack = tmp_path / "packed"
+    pack.mkdir()
+    np.save(pack / "root_pos_w.npy", root_pos.numpy())
+    np.save(pack / "root_quat_w.npy", quat.numpy())
+    np.save(pack / "root_lin_vel_w.npy", lin_vel.numpy())
+    np.save(pack / "root_ang_vel_w.npy", world_ang.numpy())
+    np.save(pack / "joint_pos.npy", joint_pos.numpy())
+    np.save(pack / "joint_vel.npy", joint_vel.numpy())
+    np.save(pack / "motion_ends.npy", np.cumsum(lengths))
+    np.save(pack / "q0.npy", q0.numpy())
+    (pack / "joint_names.json").write_text(json.dumps(list(G1_JOINT_NAMES)))
+    (pack / "motion_names.json").write_text(json.dumps(["walk", "turn"]))
+
+    library = load_bones_library(str(pack), None)
+    assert library.clip_names == ["walk", "turn"]
+    assert library.lengths.tolist() == [3, 2]
+    assert library.frames.device.type == "cpu"
+    assert library.filter_counts["packed"] is True
+    assert library.filter_counts["kept"] == 2
+    assert torch.allclose(library.q0, q0)
+    assert torch.allclose(library.frames[:, 39:42], body_ang, atol=1e-5)
+    assert torch.allclose(library.frames[:, 7:36], joint_pos)
+    assert library._kin_cache_dir == pack / "body_kinematics"
+
+    first = load_bones_library(str(pack), 1)
+    assert first.num_clips == 1
+    assert first.num_frames == 3
+    assert first.clip_names == ["walk"]
+
+
+def test_bones_seed_motion_format_passes_config_checks():
+    cfg = _compose(
+        "supermimic_lafan1_gencoord",
+        [
+            "env.train.motion_path=/data/clips",
+            "env.train.motion_format=bones_seed",
+            "env.eval.motion_format=bones_seed",
+        ],
+    )
+    validate_supermimic_cfg(cfg)
 
 
 def test_lafan1_q0_export_needs_no_license_or_output(tmp_path, monkeypatch):
@@ -1431,6 +1552,109 @@ def test_reference_fk_matches_online_fk(storage, query):
     for actual, wanted in zip(result, expected, strict=True):
         assert actual.device == ids.device
         torch.testing.assert_close(actual, wanted, atol=2e-5, rtol=2e-5)
+
+
+@needs_mjlab
+def test_body_kinematics_cache_is_reused(tmp_path):
+    """One writer stores the full-library kinematics; the next process maps it."""
+    import threading
+    import time
+
+    from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import (
+        asset_default_state,
+        g1_kinematics,
+    )
+
+    pose = asset_default_state()
+    frames = pose.repeat(5, 1)
+    frames[:, 0] = torch.arange(5, dtype=torch.float32)
+    ends = torch.tensor([5])
+    cache = tmp_path / "body_kinematics"
+    kin = g1_kinematics()
+    kin.forward(frames[:1], compile=False)
+    calls: list[int] = []
+    original = kin.forward
+
+    def counted(state, compile=True):
+        if state.shape[0] > 1:
+            calls.append(int(state.shape[0]))
+            time.sleep(0.3)
+        return original(state, compile=compile)
+
+    rows = torch.tensor([0, 4, 2])
+    kin.forward = counted
+    results: list[tuple[torch.Tensor, ...]] = []
+    errors: list[BaseException] = []
+
+    def load_once():
+        try:
+            library = MotionLibrary.from_block(
+                frames.clone(), ends.clone(), kin_cache_dir=cache
+            )
+            results.append(library.body_state(rows))
+        except BaseException as exc:
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=load_once) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        assert errors == []
+        assert all(not thread.is_alive() for thread in threads)
+        assert calls == [5]
+        assert len(results) == 2
+        for part_a, part_b in zip(results[0], results[1], strict=True):
+            torch.testing.assert_close(part_a, part_b, atol=0, rtol=0)
+        expected = original(frames, compile=False)
+        for actual, wanted in zip(results[0], expected, strict=True):
+            torch.testing.assert_close(actual, wanted[rows], atol=0, rtol=0)
+
+        def refuse_recompute(state, compile=True):
+            if state.shape[0] > 1:
+                raise AssertionError("a warm cache must not walk the kinematic tree")
+            return original(state, compile=compile)
+
+        kin.forward = refuse_recompute
+        fresh = MotionLibrary.from_block(
+            frames.clone(), ends.clone(), kin_cache_dir=cache
+        )
+        again = fresh.body_state(rows)
+        for actual, wanted in zip(again, results[0], strict=True):
+            torch.testing.assert_close(actual, wanted, atol=0, rtol=0)
+        stored = [path for path in cache.iterdir() if path.name != ".lock"]
+        assert len(stored) == 1 and stored[0].is_dir()
+        for name in ("pos.npy", "rot.npy", "lin.npy", "ang.npy", "meta.json", "ready"):
+            assert (stored[0] / name).is_file()
+
+        shifted = frames.clone()
+        shifted[:, 0] = shifted[:, 0] + 1
+        kin.forward = counted
+        calls.clear()
+        other = MotionLibrary.from_block(shifted, ends.clone(), kin_cache_dir=cache)
+        moved = other.body_state(torch.tensor([0]))
+        assert calls == [5]
+        assert not torch.equal(moved[0], again[0][:1])
+        written = [path for path in cache.iterdir() if path.name != ".lock"]
+        assert len(written) == 2
+    finally:
+        kin.forward = original
+
+
+@needs_mjlab
+def test_body_kinematics_digest_covers_every_frame():
+    """A frame the old 1024-stride sample skipped still changes the cache key."""
+    from rlinf.envs.sim.g1_mimic.kinematics.g1_fk import asset_default_state
+
+    pose = asset_default_state()
+    frames = pose.repeat(1025, 1)
+    ends = torch.tensor([1025])
+    original = MotionLibrary.from_block(frames, ends)
+    changed = frames.clone()
+    changed[1, 0] += 1
+    edited = MotionLibrary.from_block(changed, ends)
+    assert original._kin_cache_identity() != edited._kin_cache_identity()
 
 
 @needs_warp

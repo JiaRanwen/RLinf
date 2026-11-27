@@ -85,7 +85,7 @@ RLinf 提供统一的具身智能评测入口，支持在仿真或真机环境�
      - ``simple/simple_psi0_eval.yaml``
      - :doc:`Psi0 <../examples/embodied/psi0>`
    * - :doc:`SuperMimic <guides/supermimic>`
-     - LAFAN1 参考动作；GenCoord 与 MaxCoord；站立推力恢复
+     - LAFAN1 参考动作；实验性 BONES-SEED；GenCoord 与 MaxCoord；站立推力恢复
      - ``supermimic/supermimic_lafan1_eval.yaml``、``supermimic/supermimic_push_recovery.yaml``
      - :doc:`SuperMimic <../examples/embodied/supermimic>`
    * - :doc:`真机评测 <guides/realworld>`

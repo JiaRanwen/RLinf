@@ -14,7 +14,7 @@ is_eval: False
 
 # Reference motions.
 motion_path: ${oc.env:SUPERMIMIC_MOTION_PATH,""}
-motion_format: lafan1
+motion_format: lafan1       # lafan1 or experimental bones_seed
 num_clips: null             # null loads every clip
 motion_on_cpu: False        # keep the library and its FK cache in host memory
 
